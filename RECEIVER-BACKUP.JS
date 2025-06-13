@@ -15,9 +15,6 @@ const subscriptions = new Map();
 const app = express();
 app.use(bodyParser.json());
 
-// Serve static files from the public directory
-app.use(express.static('public'));
-
 // Initialize Moralis once, before handling subscribe or webhooks
 await Moralis.start({ apiKey: process.env.MORALIS_API_KEY });
 
@@ -27,47 +24,35 @@ await Moralis.start({ apiKey: process.env.MORALIS_API_KEY });
  * → adds the address to your existing stream & emails a confirmation
  */
 app.post("/subscribe", async (req, res) => {
-  const { email, address } = req.body;
-
-  if (!email || !address) {
-    return res.status(400).json({ message: "Email and address are required" });
-  }
-
-  // Basic email validation
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
-    return res.status(400).json({ message: "Invalid email format" });
-  }
-
-  // Basic Ethereum address validation
-  const addressRegex = /^0x[a-fA-F0-9]{40}$/;
-  if (!addressRegex.test(address)) {
-    return res.status(400).json({ message: "Invalid Ethereum address format" });
+  const { address, email } = req.body;
+  if (!address || !email) {
+    return res.status(400).json({ error: "address and email required" });
   }
 
   try {
-    // Add address to Moralis stream
     await Moralis.Streams.addAddress({
-      id: process.env.STREAM_ID,
+      id:      STREAM_ID,
       address: [address],
     });
-
-    // Store the subscription
     subscriptions.set(address.toLowerCase(), email);
 
-    // Send confirmation email
-    const msg = {
-      to: email,
+    // send confirmation
+    await sgMail.send({
+      to:   email,
       from: process.env.EMAIL_FROM,
-      subject: "Subscription Confirmed - Address Activity Monitor",
-      text: `Thank you for subscribing to monitor the Ethereum address: ${address}\n\nYou will receive notifications about any activity on this address.`,
-    };
-    
-    await sgMail.send(msg);
-    res.json({ message: "Subscription successful! Please check your email for confirmation." });
+      subject: `✅ Subscribed to on-chain alerts for ${address}`,
+      html: `
+        <h2>Subscription Confirmed!</h2>
+        <p>You will now receive email alerts whenever <strong>${address}</strong> does any on-chain activity.</p>
+        <p>Thank you for using our service.</p>
+      `,
+    });
+
+    res.json({ success: true });
+    console.log("Subscribed to:", address);
   } catch (err) {
-    console.error("❌ Error during subscription:", err);
-    res.status(500).json({ message: "Failed to subscribe" });
+    console.error("Subscribe error:", err);
+    res.status(500).json({ error: "Failed to subscribe" });
   }
 });
 
