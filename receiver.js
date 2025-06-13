@@ -49,6 +49,7 @@ app.post("/subscribe", async (req, res) => {
     });
 
     res.json({ success: true });
+    console.log("Subscribed to:", address);
   } catch (err) {
     console.error("Subscribe error:", err);
     res.status(500).json({ error: "Failed to subscribe" });
