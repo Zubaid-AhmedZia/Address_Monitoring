@@ -78,87 +78,104 @@ app.post("/subscribe", async (req, res) => {
  * sends a pretty HTML email to each subscriber.
  */
 app.post("/webhook/evm", async (req, res) => {
-  const p = req.body;
-  res.sendStatus(200); // ack immediately
-
-  const hasData = ["txs","txsInternal","logs","erc20Transfers","nftTransfers"]
-    .some(k => Array.isArray(p[k]) && p[k].length > 0);
-
-  if (!hasData || !p.confirmed) {
-    console.log("Ignored test or unconfirmed:", p.retries, p.confirmed);
-    return;
-  }
-
-  // Build a list of all subscriber emails for this event
-  const emails = new Set();
-  for (const tx of p.txs) {
-    (tx.triggered_by || []).forEach(addr =>
-      subscriptions.has(addr.toLowerCase()) &&
-      emails.add(subscriptions.get(addr.toLowerCase()))
+    const p = req.body;
+    // immediately ACK Moralis
+    res.sendStatus(200);
+  
+    // 1) skip Moralis’s empty‐payload test ping
+    const hasData = ["txs","txsInternal","logs","erc20Transfers","nftTransfers"]
+      .some(k => Array.isArray(p[k]) && p[k].length > 0);
+    if (!hasData) {
+      console.log("Ignored test ping:", p.retries);
+      return;
+    }
+  
+    // 2) determine if this is the first unconfirmed or the confirmed webhook
+    const isFirstUnconfirmed = (p.retries === 0 && p.confirmed === false);
+    const isConfirmed       = (p.confirmed === true);
+  
+    if (!isFirstUnconfirmed && !isConfirmed) {
+      console.log("Skipping retry or unexpected status:", p.retries, p.confirmed);
+      return;
+    }
+  
+    console.log(
+      isFirstUnconfirmed
+        ? "⚡️ Sending REAL-TIME alert for unconfirmed tx"
+        : "✅ Sending CONFIRMED alert"
     );
-  }
-  if (emails.size === 0) {
-    console.log("No subscribers for this address, skipping email.");
-    return;
-  }
-
-  // Convert wei to ETH and format date
-  const ethValue = tx =>
-    (Number(tx.value) / 1e18).toLocaleString(undefined, { minimumFractionDigits: 4 });
-  const time   = new Date(Number(p.block.timestamp) * 1000).toUTCString();
-
-  // HTML email template
-  const html = `
-    <h2>🔔 On-chain Activity Detected</h2>
-    <p><strong>Address:</strong> ${p.tag}</p>
-    <p><strong>Time:</strong> ${time}</p>
-    <p><strong>Block:</strong> ${p.block.number} (<code>${p.block.hash}</code>)</p>
-
-    <h3>Native Transaction</h3>
-    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;">
-      <tr><th>Hash</th><td><a href="https://etherscan.io/tx/${p.txs[0].hash}" target="_blank">${p.txs[0].hash}</a></td></tr>
-      <tr><th>From</th><td>${p.txs[0].fromAddress}</td></tr>
-      <tr><th>To</th><td>${p.txs[0].toAddress}</td></tr>
-      <tr><th>Value</th><td>${ethValue(p.txs[0])} ETH</td></tr>
-      <tr><th>Gas Used</th><td>${p.txs[0].receiptGasUsed}</td></tr>
-    </table>
-
-    ${
-      p.erc20Transfers.length
-        ? `<h3>ERC-20 Transfers</h3>
-           ${p.erc20Transfers.map(t =>
-             `<p>${t.from} → ${t.to}, ${Number(t.value)/1e18} tokens<br>
-               <a href="https://etherscan.io/tx/${t.transactionHash}">${t.transactionHash}</a>
-             </p>`
-           ).join("")}`
-        : ``
+  
+    // 3) collect subscriber emails for any of the involved addresses
+    const emails = new Set();
+    for (const tx of p.txs) {
+      (tx.triggered_by || []).forEach(addr => {
+        const sub = subscriptions.get(addr.toLowerCase());
+        if (sub) emails.add(sub);
+      });
     }
-
-    ${
-      p.nftTransfers.length
-        ? `<h3>NFT Transfers</h3>
-           ${p.nftTransfers.map(n =>
-             `<p>${n.from} → ${n.to}, TokenID: ${n.tokenId}
-              <br><a href="https://etherscan.io/tx/${n.transactionHash}">${n.transactionHash}</a>
-             </p>`
-           ).join("")}`
-        : ``
+    if (emails.size === 0) {
+      console.log("No subscribers found, skipping email.");
+      return;
     }
-  `;
-
-  // Fire off one email per subscriber
-  await Promise.all(
-    Array.from(emails).map(email =>
-      sgMail.send({
-        to:   email,
-        from: process.env.EMAIL_FROM,
-        subject: `🔔 Activity on ${p.tag}`,
-        html,
-      })
-    )
-  );
-  console.log("Emails sent to:", [...emails].join(", "));
-});
+  
+    // 4) helper to format ETH values and timestamp
+    const fmtEth = tx => (Number(tx.value) / 1e18).toLocaleString(undefined, { minimumFractionDigits: 4 });
+    const time   = new Date(Number(p.block.timestamp) * 1000).toUTCString();
+  
+    // 5) build a clean HTML template
+    const html = `
+      <h2>🔔 On-chain Activity Detected</h2>
+      <p><strong>Address:</strong> ${p.tag}</p>
+      <p><strong>Time:</strong> ${time}</p>
+      <p><strong>Block:</strong> ${p.block.number} (<code>${p.block.hash}</code>)</p>
+  
+      <h3>Native Transaction</h3>
+      <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;">
+        <tr><th>Hash</th><td><a href="https://sepolia.etherscan.io/tx/${p.txs[0].hash}" target="_blank">${p.txs[0].hash}</a></td></tr>
+        <tr><th>From</th><td>${p.txs[0].fromAddress}</td></tr>
+        <tr><th>To</th><td>${p.txs[0].toAddress}</td></tr>
+        <tr><th>Value</th><td>${fmtEth(p.txs[0])} ETH</td></tr>
+        <tr><th>Gas Used</th><td>${p.txs[0].receiptGasUsed}</td></tr>
+      </table>
+  
+      ${
+        p.erc20Transfers.length
+          ? `<h3>ERC-20 Transfers</h3>` +
+            p.erc20Transfers.map(t =>
+              `<p>${t.from} → ${t.to}, ${(Number(t.value)/1e18).toLocaleString()} tokens<br>
+                <a href="https://sepolia.etherscan.io/tx/${t.transactionHash}">${t.transactionHash}</a>
+              </p>`
+            ).join("")
+          : ``
+      }
+  
+      ${
+        p.nftTransfers.length
+          ? `<h3>NFT Transfers</h3>` +
+            p.nftTransfers.map(n =>
+              `<p>${n.from} → ${n.to}, TokenID: ${n.tokenId}<br>
+                 <a href="https://sepolia.etherscan.io/tx/${n.transactionHash}">${n.transactionHash}</a>
+              </p>`
+            ).join("")
+          : ``
+      }
+    `;
+  
+    // 6) send one email per subscriber
+    await Promise.all(
+      Array.from(emails).map(email =>
+        sgMail.send({
+          to:      email,
+          from:    process.env.EMAIL_FROM,
+          subject: isFirstUnconfirmed
+            ? `⚡ Unconfirmed activity on ${p.tag}`
+            : `✅ Confirmed activity on ${p.tag}`,
+          html,
+        })
+      )
+    );
+    console.log("Emails sent to:", [...emails].join(", "));
+  });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
